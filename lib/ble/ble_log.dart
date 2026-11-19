@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 enum LogDir { tx, rx, info }
@@ -20,6 +21,7 @@ class BleLog extends Notifier<List<LogEntry>> {
   List<LogEntry> build() => const [];
 
   void add(LogDir dir, String text) {
+    if (kDebugMode) debugPrint('[ble] ${dir.name} $text'); // debug builds only
     final next = [...state, LogEntry(DateTime.now(), dir, text)];
     state = next.length > _max ? next.sublist(next.length - _max) : next;
   }

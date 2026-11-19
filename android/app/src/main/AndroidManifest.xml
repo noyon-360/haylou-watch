@@ -13,10 +13,17 @@
 
     <!-- Connect to the watch and send it commands -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+
+    <!-- Keep the watch link alive with the app closed (one quiet "Connected" notification). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
+    <!-- Show that status notification (Android 13+ asks the user; optional). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- NOT requested: contacts, SMS, call log, phone state, location, internet. -->
     
     <application
-        android:label="watch"
-        android:name="${applicationName}"
+        android:label="Watch"
+        android:name=".WatchApp"
         android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"
@@ -40,6 +47,23 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <service
+            android:name=".WatchLinkService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice"/>
+
+        <!-- Notification access is granted by the user in Android settings.
+             Only allow-listed apps are forwarded (filtered in AlertListenerService). -->
+        <service
+            android:name=".AlertListenerService"
+            android:label="Watch alerts"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService"/>
+            </intent-filter>
+        </service>
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
@@ -55,6 +79,11 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- List apps with a launcher icon for the alerts picker (no QUERY_ALL_PACKAGES). -->
+        <intent>
+            <action android:name="android.intent.action.MAIN"/>
+            <category android:name="android.intent.category.LAUNCHER"/>
         </intent>
     </queries>
 </manifest>

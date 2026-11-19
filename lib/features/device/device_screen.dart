@@ -1,121 +1,129 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../ble/ble_log.dart';
 import '../../data/saved_device.dart';
+import '../debug/console_screen.dart';
 import 'watch_controller.dart';
 
-class DeviceScreen extends ConsumerStatefulWidget {
+class DeviceScreen extends ConsumerWidget {
   const DeviceScreen({super.key, required this.device});
   final SavedDevice device;
 
-  @override
-  ConsumerState<DeviceScreen> createState() => _DeviceScreenState();
-}
-
-class _DeviceScreenState extends ConsumerState<DeviceScreen> {
-  final _hexController = TextEditingController();
-
-  @override
-  void initState() {
-    super.initState();
-    // Auto-connect to the saved watch (no scan needed, works with Location off).
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final s = ref.read(watchControllerProvider);
-      if (s.status != LinkStatus.ready && !s.isBusy) {
-        ref.read(watchControllerProvider.notifier).connect(widget.device.id);
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _hexController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _forget() async {
+  Future<void> _forget(BuildContext context, WidgetRef ref) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Forget this watch?'),
+        content: const Text('The app disconnects and you can pair again from the scan screen. '
+            'Health data stored on this phone is kept.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('Forget')),
+        ],
+      ),
+    );
+    if (ok != true) return;
     await ref.read(watchControllerProvider.notifier).disconnect();
     await ref.read(savedDeviceProvider.notifier).clear();
   }
 
-  Future<void> _send() async {
+  Future<void> _guard(BuildContext context, Future<void> Function() op, String done) async {
+    final messenger = ScaffoldMessenger.of(context);
     try {
-      await ref
-          .read(watchControllerProvider.notifier)
-          .sendRaw(_hexController.text);
+      await op();
+      messenger.showSnackBar(SnackBar(content: Text(done)));
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Send failed: $e')));
+      messenger.showSnackBar(SnackBar(content: Text('Failed: $e')));
     }
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final watch = ref.watch(watchControllerProvider);
     final controller = ref.read(watchControllerProvider.notifier);
-    final ready = watch.status == LinkStatus.ready;
+    final ready = watch.isReady;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.device.name),
+        title: Text(device.name),
         actions: [
           PopupMenuButton<String>(
             onSelected: (v) {
-              if (v == 'forget') _forget();
-              if (v == 'clear') ref.read(bleLogProvider.notifier).clear();
+              if (v == 'forget') _forget(context, ref);
+              if (v == 'console') {
+                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ConsoleScreen()));
+              }
             },
             itemBuilder: (_) => const [
-              PopupMenuItem(value: 'clear', child: Text('Clear log')),
+              PopupMenuItem(value: 'console', child: Text('Debug console')),
               PopupMenuItem(value: 'forget', child: Text('Forget this watch')),
             ],
           ),
         ],
       ),
-      body: Column(
+      body: ListView(
+        padding: const EdgeInsets.only(bottom: 24),
         children: [
+          if (watch.findingPhone)
+            Card(
+              margin: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+              color: Theme.of(context).colorScheme.errorContainer,
+              child: ListTile(
+                leading: const Icon(Icons.phonelink_ring),
+                title: const Text('Your watch is looking for this phone'),
+                trailing: FilledButton(onPressed: controller.stopFindingPhone, child: const Text('Stop')),
+              ),
+            ),
           _StatusCard(
             state: watch,
-            deviceId: widget.device.id,
-            onConnect: () => controller.connect(widget.device.id),
+            deviceId: device.id,
+            onConnect: () => controller.connect(device.id),
             onDisconnect: controller.disconnect,
           ),
           _InfoCard(state: watch, onRefresh: ready ? controller.refreshInfo : null),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text('Raw log  (→ sent to 6001,  ← received on 6002)'),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+            child: Row(
+              children: [
+                Expanded(
+                  child: FilledButton.tonalIcon(
+                    onPressed: ready
+                        ? () => _guard(context, controller.findWatch, 'Watch is vibrating')
+                        : null,
+                    icon: const Icon(Icons.vibration),
+                    label: const Text('Find watch'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton.tonalIcon(
+                    onPressed: ready && !watch.syncing
+                        ? () => _guard(context, controller.syncHealth, 'Health data synced')
+                        : null,
+                    icon: watch.syncing
+                        ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.sync),
+                    label: const Text('Sync now'),
+                  ),
+                ),
+              ],
             ),
           ),
-          const Expanded(child: _LogView()),
-          SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _hexController,
-                      enabled: ready,
-                      style: const TextStyle(fontFamily: 'monospace'),
-                      decoration: const InputDecoration(
-                        hintText: 'hex, e.g. 03',
-                        isDense: true,
-                        border: OutlineInputBorder(),
-                      ),
-                      onSubmitted: (_) => _send(),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  FilledButton(
-                    onPressed: ready ? _send : null,
-                    child: const Text('Send'),
-                  ),
-                ],
+          if (watch.liveHeart != null)
+            Card(
+              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: ListTile(
+                leading: const Icon(Icons.favorite, color: Colors.red),
+                title: Text('${watch.liveHeart} bpm'),
+                subtitle: Text('Live from the watch · ${_hm(watch.liveHeartAt!)}'),
               ),
+            ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(24, 16, 24, 0),
+            child: Text(
+              'Everything stays on this phone. The app talks only to your watch over Bluetooth: '
+              'no account, no internet, no analytics.',
+              style: TextStyle(fontSize: 12),
             ),
           ),
         ],
@@ -123,6 +131,9 @@ class _DeviceScreenState extends ConsumerState<DeviceScreen> {
     );
   }
 }
+
+String _hm(DateTime t) =>
+    '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
 class _StatusCard extends StatelessWidget {
   const _StatusCard({
@@ -172,11 +183,8 @@ class _StatusCard extends StatelessWidget {
               ),
             ),
             if (state.isBusy)
-              const SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(strokeWidth: 2))
-            else if (state.status == LinkStatus.ready)
+              const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
+            else if (state.isReady)
               TextButton(onPressed: onDisconnect, child: const Text('Disconnect'))
             else
               FilledButton(onPressed: onConnect, child: const Text('Connect')),
@@ -195,66 +203,34 @@ class _InfoCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
+    final b = state.battery;
+    final icon = b == null
+        ? Icons.battery_unknown
+        : b > 80
+            ? Icons.battery_full
+            : b > 50
+                ? Icons.battery_5_bar
+                : b > 20
+                    ? Icons.battery_3_bar
+                    : Icons.battery_alert;
+    final sync = state.lastSync == null ? 'never' : _hm(state.lastSync!);
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
         child: Row(
           children: [
-            const Icon(Icons.battery_std),
+            Icon(icon),
             const SizedBox(width: 8),
-            Text(state.battery == null ? '--' : '${state.battery}%',
-                style: text.headlineSmall),
+            Text(b == null ? '--' : '$b%', style: text.headlineSmall),
             const SizedBox(width: 24),
             Expanded(
-              child: Text('Serial: ${state.serial ?? '--'}\nMTU: ${state.mtu ?? '--'}',
-                  style: text.bodySmall),
+              child: Text('Serial: ${state.serial ?? '--'}\nLast sync: $sync', style: text.bodySmall),
             ),
-            IconButton(
-              tooltip: 'Refresh',
-              onPressed: onRefresh,
-              icon: const Icon(Icons.refresh),
-            ),
+            IconButton(tooltip: 'Refresh', onPressed: onRefresh, icon: const Icon(Icons.refresh)),
           ],
         ),
       ),
-    );
-  }
-}
-
-class _LogView extends ConsumerWidget {
-  const _LogView();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final entries = ref.watch(bleLogProvider);
-    final scheme = Theme.of(context).colorScheme;
-
-    if (entries.isEmpty) {
-      return const Center(child: Text('No traffic yet'));
-    }
-    return ListView.builder(
-      reverse: true, // newest at the bottom, auto-scrolls
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      itemCount: entries.length,
-      itemBuilder: (_, i) {
-        final e = entries[entries.length - 1 - i];
-        final t = e.time;
-        final time =
-            '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}:${t.second.toString().padLeft(2, '0')}';
-        final (arrow, color) = switch (e.dir) {
-          LogDir.tx => ('→', scheme.primary),
-          LogDir.rx => ('←', Colors.green),
-          LogDir.info => ('•', scheme.outline),
-        };
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 1),
-          child: SelectableText(
-            '$time $arrow ${e.text}',
-            style: TextStyle(fontFamily: 'monospace', fontSize: 12, color: color),
-          ),
-        );
-      },
     );
   }
 }

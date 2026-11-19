@@ -7,6 +7,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../ble/ble_log.dart';
 import '../../ble/watch_link.dart';
 import '../../core/hex.dart';
+import '../../data/health_store.dart';
+import '../../platform/native_bridge.dart';
+import '../../protocol/commands.dart';
+import '../../protocol/history.dart';
 import '../../protocol/watch_session.dart';
 
 enum LinkStatus { disconnected, connecting, discovering, handshaking, ready, error }
@@ -19,6 +23,11 @@ class WatchState {
     this.battery,
     this.serial,
     this.message,
+    this.liveHeart,
+    this.liveHeartAt,
+    this.syncing = false,
+    this.lastSync,
+    this.findingPhone = false,
   });
 
   final LinkStatus status;
@@ -29,6 +38,16 @@ class WatchState {
 
   /// Error or info for the user (e.g. "Retrying in 4 s").
   final String? message;
+
+  /// Last bpm pushed by the watch while it measures.
+  final int? liveHeart;
+  final DateTime? liveHeartAt;
+
+  final bool syncing;
+  final DateTime? lastSync;
+  final bool findingPhone;
+
+  bool get isReady => status == LinkStatus.ready;
 
   bool get isBusy =>
       status == LinkStatus.connecting ||
@@ -43,6 +62,11 @@ class WatchState {
     String? serial,
     String? message,
     bool clearMessage = false,
+    int? liveHeart,
+    DateTime? liveHeartAt,
+    bool? syncing,
+    DateTime? lastSync,
+    bool? findingPhone,
   }) {
     return WatchState(
       status: status ?? this.status,
@@ -51,6 +75,11 @@ class WatchState {
       battery: battery ?? this.battery,
       serial: serial ?? this.serial,
       message: clearMessage ? null : (message ?? this.message),
+      liveHeart: liveHeart ?? this.liveHeart,
+      liveHeartAt: liveHeartAt ?? this.liveHeartAt,
+      syncing: syncing ?? this.syncing,
+      lastSync: lastSync ?? this.lastSync,
+      findingPhone: findingPhone ?? this.findingPhone,
     );
   }
 }
@@ -59,14 +88,19 @@ final watchControllerProvider =
     NotifierProvider<WatchController, WatchState>(WatchController.new);
 
 /// Owns the connection lifecycle: connect -> discover -> handshake -> ready,
-/// plus auto-reconnect with backoff.
+/// auto-reconnect with backoff, and every command sent to the watch.
 class WatchController extends Notifier<WatchState> {
   WatchLink? _link;
   WatchSession? _session;
   StreamSubscription<BluetoothConnectionState>? _connSub;
+  StreamSubscription<List<int>>? _pushSub;
   Timer? _retryTimer;
+  Timer? _periodic;
   int _attempt = 0;
   bool _userDisconnected = false;
+
+  /// Serialises all watch traffic so multi-frame transfers never interleave.
+  Future<void> _lock = Future.value();
 
   BleLog get _log => ref.read(bleLogProvider.notifier);
 
@@ -74,20 +108,27 @@ class WatchController extends Notifier<WatchState> {
   WatchState build() {
     ref.onDispose(() {
       _retryTimer?.cancel();
+      _periodic?.cancel();
       _closeLink();
     });
     return const WatchState();
   }
 
   Future<void> connect(String deviceId) async {
-    if (state.isBusy) return;
+    if (state.isBusy || state.isReady) return;
     _userDisconnected = false;
     _retryTimer?.cancel();
 
     await FlutterBluePlus.stopScan(); // scanning slows down connecting
     await _closeLink();
 
-    state = WatchState(status: LinkStatus.connecting, deviceId: deviceId);
+    state = WatchState(
+      status: LinkStatus.connecting,
+      deviceId: deviceId,
+      battery: state.battery,
+      serial: state.serial,
+      lastSync: state.lastSync,
+    );
     final link = WatchLink(BluetoothDevice.fromId(deviceId), log: _log.add);
     _link = link;
 
@@ -102,53 +143,163 @@ class WatchController extends Notifier<WatchState> {
       final session = WatchSession(link);
       await session.handshake();
       _session = session;
+      _pushSub = link.incoming.listen(_onPush);
       _log.add(LogDir.info, 'Handshake OK');
 
       _attempt = 0;
       state = state.copyWith(status: LinkStatus.ready, clearMessage: true);
-      await refreshInfo();
+      await _onConnected();
     } catch (e) {
       _log.add(LogDir.info, 'Connect failed: $e');
       await _closeLink();
+      if (_userDisconnected) return;
       state = state.copyWith(status: LinkStatus.error, message: '$e');
       _scheduleReconnect();
     }
   }
 
-  /// Reads battery + serial. Safe to call any time while ready.
+  Future<void> _onConnected() async {
+    await _run((s) => s.setTime(DateTime.now()));
+    await refreshInfo();
+    await syncHealth();
+    _periodic?.cancel();
+    _periodic = Timer.periodic(const Duration(minutes: 15), (_) async {
+      await refreshInfo();
+      await syncHealth();
+    });
+  }
+
+  /// Runs [op] with the session, one at a time. Returns null when not connected.
+  Future<T?> _run<T>(Future<T> Function(WatchSession s) op) {
+    final result = Completer<T?>();
+    _lock = _lock.then((_) async {
+      final s = _session;
+      if (s == null || !state.isReady) {
+        result.complete(null);
+        return;
+      }
+      try {
+        result.complete(await op(s));
+      } catch (e, st) {
+        result.completeError(e, st);
+      }
+    });
+    return result.future;
+  }
+
+  /// Reads battery, serial and the watch's own switch states.
   Future<void> refreshInfo() async {
-    final session = _session;
-    if (session == null || state.status != LinkStatus.ready) return;
     try {
-      final battery = await session.battery();
-      state = state.copyWith(battery: battery);
+      final battery = await _run((s) => s.battery());
+      if (battery != null) state = state.copyWith(battery: battery);
     } catch (e) {
       _log.add(LogDir.info, 'Battery read failed: $e');
     }
     try {
-      final serial = await session.serial();
-      state = state.copyWith(serial: serial);
+      final serial = await _run((s) => s.serial());
+      if (serial != null) state = state.copyWith(serial: serial);
     } catch (e) {
       _log.add(LogDir.info, 'Serial read failed: $e');
     }
+    // Note: the 0C 02 switch-state reply is logged but NOT applied to settings:
+    // on this watch it sometimes reads all-zero (seen live 2026-11-19).
+    try {
+      await _run((s) => s.quickSwitches());
+    } catch (_) {}
   }
 
-  /// Debug console: send arbitrary hex to 0x6001.
-  Future<void> sendRaw(String hex) async {
-    final link = _link;
-    if (link == null || state.status != LinkStatus.ready) {
-      throw StateError('Not connected');
+  /// Pulls the last 7 days of steps, heart rate and sleep into local storage.
+  Future<void> syncHealth() async {
+    if (!state.isReady || state.syncing) return;
+    state = state.copyWith(syncing: true);
+    final now = DateTime.now();
+    final since = DateTime(now.year, now.month, now.day).subtract(const Duration(days: 6));
+    try {
+      final steps = await _run((s) => s.stepHistory(since)) ?? const <StepRecord>[];
+      final heart = await _run((s) => s.heartHistory(since)) ?? const <String, List<int>>{};
+      final sleep = await _run((s) => s.sleepHistory(since)) ?? const <String, List<SleepSegment>>{};
+      // Drop records outside the window (the watch reports e.g. 2021-01-01
+      // leftovers from before its clock was set).
+      final from = dayKey(since), to = dayKey(now);
+      bool inRange(String d) => d.compareTo(from) >= 0 && d.compareTo(to) <= 0;
+      await ref.read(healthStoreProvider.notifier).merge(
+            steps: steps.where((r) => inRange(r.day)).toList(),
+            heart: {for (final e in heart.entries) if (inRange(e.key)) e.key: e.value},
+            sleep: {for (final e in sleep.entries) if (inRange(e.key)) e.key: e.value},
+          );
+      _log.add(LogDir.info,
+          'Synced ${steps.length} step hours, ${heart.length} HR days, ${sleep.length} nights');
+      state = state.copyWith(syncing: false, lastSync: DateTime.now());
+    } catch (e) {
+      _log.add(LogDir.info, 'Health sync failed: $e');
+      state = state.copyWith(syncing: false);
     }
-    await link.write(fromHex(hex));
+  }
+
+  // ---- commands used by the UI --------------------------------------------
+
+  Future<void> findWatch() => _run((s) => s.findWatch());
+
+  Future<void> applyFormat({required bool metric, required bool use24h}) =>
+      _run((s) => s.setFormat(metric: metric, use24h: use24h));
+
+  Future<void> applyParams(DeviceParams p) => _run((s) => s.setParams(p));
+
+  Future<void> applyDnd(DndSettings d) => _run((s) => s.setDnd(d));
+
+  Future<void> applySedentary(SedentarySettings d) => _run((s) => s.setSedentary(d));
+
+  Future<void> applyHeartMode(bool auto) => _run((s) => s.setHeartMode(auto: auto));
+
+  Future<void> sendNotification(int type, String title, String body) =>
+      _run((s) => s.writeAll(messageFrames(type, title, body)));
+
+  Future<void> sendCall(String caller) => _run((s) => s.writeAll(callFrames(caller)));
+
+  Future<void> endCall() => _run((s) => s.link.write(Commands.callEnd));
+
+  Future<void> stopFindingPhone() async {
+    state = state.copyWith(findingPhone: false);
+    await NativeBridge.instance.ring(false);
+  }
+
+  /// Debug console: send arbitrary hex to 0x6001. Factory reset is refused.
+  Future<void> sendRaw(String hex) async {
+    final frame = fromHex(hex);
+    if (blockedOpcodes.contains(frame.first)) {
+      throw StateError('Opcode ${toHex([frame.first])} is blocked (factory reset)');
+    }
+    final link = _link;
+    if (link == null || !state.isReady) throw StateError('Not connected');
+    await link.write(frame);
   }
 
   Future<void> disconnect() async {
     _userDisconnected = true;
     _retryTimer?.cancel();
     await _closeLink();
-    state = state.copyWith(
-        status: LinkStatus.disconnected, message: 'Disconnected');
+    state = state.copyWith(status: LinkStatus.disconnected, message: 'Disconnected');
     _log.add(LogDir.info, 'Disconnected by user');
+  }
+
+  // ---- unsolicited frames from the watch ----------------------------------
+
+  void _onPush(List<int> f) {
+    final bpm = decodeLiveHeart(f);
+    if (bpm != null) {
+      state = state.copyWith(liveHeart: bpm, liveHeartAt: DateTime.now());
+      return;
+    }
+    final find = decodeFindPhone(f);
+    if (find != null) {
+      final on = switch (find) {
+        FindPhone.start => true,
+        FindPhone.stop => false,
+        FindPhone.toggle => !state.findingPhone,
+      };
+      state = state.copyWith(findingPhone: on);
+      NativeBridge.instance.ring(on);
+    }
   }
 
   void _watchForDisconnect(BluetoothDevice device) {
@@ -159,9 +310,18 @@ class WatchController extends Notifier<WatchState> {
       _log.add(LogDir.info,
           'Connection lost (reason: ${device.disconnectReason?.description ?? 'unknown'})');
       _session = null;
+      _periodic?.cancel();
       state = state.copyWith(status: LinkStatus.disconnected);
       _scheduleReconnect();
     });
+  }
+
+  /// Called by the runtime when Bluetooth comes back on.
+  void reconnectNow() {
+    final id = state.deviceId;
+    if (id == null || _userDisconnected || state.isBusy || state.isReady) return;
+    _attempt = 0;
+    connect(id);
   }
 
   void _scheduleReconnect() {
@@ -179,6 +339,9 @@ class WatchController extends Notifier<WatchState> {
   }
 
   Future<void> _closeLink() async {
+    _periodic?.cancel();
+    await _pushSub?.cancel();
+    _pushSub = null;
     await _connSub?.cancel();
     _connSub = null;
     _session = null;
