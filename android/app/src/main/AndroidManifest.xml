@@ -1,4 +1,19 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Only install on phones with Bluetooth Low Energy -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
+
+    <!-- Scan for the watch. neverForLocation = we promise never to work out location from it,
+        so Android does NOT ask for location. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s"/>
+
+    <!-- Connect to the watch and send it commands -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    
     <application
         android:label="watch"
         android:name="${applicationName}"
