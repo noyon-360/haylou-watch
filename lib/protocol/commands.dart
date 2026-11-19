@@ -55,6 +55,11 @@ abstract final class Commands {
   static const List<int> findWatch = [0x06, 0, 0, 0, 0x01, 0x02, 0x07, 0x01];
   static const List<int> stopFindWatch = [0x06, 0, 0, 0, 0, 0, 0, 0];
 
+  /// Incoming-call buzz: same `06` vibrate command (`06 00 00 00 dur repeat
+  /// light lightState`, from rd/k0) but without the find-watch light, so the
+  /// call screen stays up. The watch doesn't vibrate on its own for `0F` type 0.
+  static const List<int> callBuzz = [0x06, 0, 0, 0, 0x01, 0x03, 0x00, 0x00];
+
   /// Stops the incoming-call alert on the watch.
   static const List<int> callEnd = [Op.callEnd, 0x04];
 
@@ -359,9 +364,21 @@ List<List<int>> messageFrames(int type, String title, String body) {
   return packMessage(Op.message, type, utf16be(text, 254));
 }
 
-/// Incoming-call alert showing [caller] (≤30 bytes).
+/// Incoming-call alert showing [caller] (≤30 bytes = 15 UTF-16 chars).
 List<List<int>> callFrames(String caller) =>
-    packMessage(Op.message, MsgType.call, utf16be(caller, 30));
+    packMessage(Op.message, MsgType.call, utf16be(callerLabel(caller), 30));
+
+/// Android wraps numbers in invisible bidi marks (U+202A…U+202E,
+/// U+2066…U+2069, U+200E/F) which the watch draws as "[". Strip them, and for
+/// phone numbers drop spaces/dashes/brackets so "+880 1305-223456" fits
+/// the 15-char limit as "+8801305223456".
+String callerLabel(String s) {
+  final clean = s
+      .replaceAll(RegExp(r'[\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]'), '')
+      .trim();
+  final isNumber = RegExp(r'^\+?[\d\s\-().]+$').hasMatch(clean);
+  return isNumber ? clean.replaceAll(RegExp(r'[\s\-().]'), '') : clean;
+}
 
 // ---------------------------------------------------------------------------
 // Decoders

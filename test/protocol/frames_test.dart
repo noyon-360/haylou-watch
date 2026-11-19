@@ -153,5 +153,11 @@ void main() {
       final frames = callFrames('A very long caller name here');
       expect(frames.first.sublist(0, 4), [0x0F, 0, 0, 30]);
     });
+
+    test('caller label strips bidi marks and number formatting', () {
+      expect(callerLabel('\u202A+880 1305-223456\u202C'), '+8801305223456');
+      expect(callerLabel('\u2068Mom\u2069'), 'Mom');
+      expect(callerLabel('Dr. (Work) 2'), 'Dr. (Work) 2');
+    });
   });
 }

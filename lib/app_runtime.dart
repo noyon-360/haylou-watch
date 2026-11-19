@@ -28,6 +28,28 @@ class AppRuntime {
   final _subs = <StreamSubscription<dynamic>>[];
   final _recent = <String, DateTime>{}; // de-dup notification updates
   final _activeCalls = <String>{};
+  Timer? _buzzTimer;
+
+  /// The watch shows the call screen but doesn't vibrate by itself, so buzz
+  /// every 3 s while ringing; capped at 60 s in case the end event is missed.
+  void _startCallBuzz(WatchController watch) {
+    _stopCallBuzz();
+    var ticks = 0;
+    Future<void> buzz() => watch.buzzForCall().catchError((_) {});
+    buzz();
+    _buzzTimer = Timer.periodic(const Duration(seconds: 3), (t) {
+      if (++ticks >= 20 || _activeCalls.isEmpty) {
+        _stopCallBuzz();
+      } else {
+        buzz();
+      }
+    });
+  }
+
+  void _stopCallBuzz() {
+    _buzzTimer?.cancel();
+    _buzzTimer = null;
+  }
 
   void start() {
     // Connect as soon as a saved watch + permission + Bluetooth are present.
@@ -94,9 +116,13 @@ class AppRuntime {
     if (n.isCall) {
       if (!settings.callAlerts) return;
       if (n.removed || n.callActive) {
-        if (_activeCalls.remove(n.key)) await watch.endCall();
+        if (_activeCalls.remove(n.key)) {
+          if (_activeCalls.isEmpty) _stopCallBuzz();
+          await watch.endCall();
+        }
       } else if (_activeCalls.add(n.key)) {
         await watch.sendCall(n.title.isNotEmpty ? n.title : n.text);
+        _startCallBuzz(watch);
       }
       return;
     }

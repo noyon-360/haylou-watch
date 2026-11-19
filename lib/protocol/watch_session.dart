@@ -104,6 +104,9 @@ class WatchSession {
   Future<void> findWatch({bool stop = false}) =>
       request(stop ? Commands.stopFindWatch : Commands.findWatch);
 
+  Future<void> callBuzz({bool stop = false}) =>
+      request(stop ? Commands.stopFindWatch : Commands.callBuzz);
+
   Future<void> setFormat({required bool metric, required bool use24h}) =>
       request(Commands.format(metric: metric, use24h: use24h));
 

@@ -256,7 +256,13 @@ class WatchController extends Notifier<WatchState> {
 
   Future<void> sendCall(String caller) => _run((s) => s.writeAll(callFrames(caller)));
 
-  Future<void> endCall() => _run((s) => s.link.write(Commands.callEnd));
+  Future<void> endCall() => _run((s) async {
+        await s.callBuzz(stop: true);
+        await s.link.write(Commands.callEnd);
+      });
+
+  /// One vibration burst while a call is ringing (repeated by AppRuntime).
+  Future<void> buzzForCall() => _run((s) => s.callBuzz());
 
   Future<void> stopFindingPhone() async {
     state = state.copyWith(findingPhone: false);
