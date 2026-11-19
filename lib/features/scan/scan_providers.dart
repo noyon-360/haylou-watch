@@ -14,7 +14,7 @@ String displayName(ScanResult r) {
   final adv = r.advertisementData.advName;
   if (adv.isNotEmpty) return adv;
   final platform = r.device.platformName;
-  return platform.isNotEmpty ? platform : '(no name)';
+  return platform.isNotEmpty ? platform : 'Unknown device';
 }
 
 /// Live scan results: likely watches first, then strongest signal.

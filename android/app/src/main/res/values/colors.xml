@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Season primaries (Figma "Season" variables) for the launcher icon backgrounds. -->
+    <color name="season_grishma">#A9512C</color>
+    <color name="season_barsha">#2F6070</color>
+    <color name="season_sharat">#3C6E9F</color>
+    <color name="season_hemanta">#5F6E34</color>
+    <color name="season_sheet">#4F5D75</color>
+    <color name="season_basanta">#A9473B</color>
+    <!-- Neutral warm canvas behind the Android 12+ splash icon. -->
+    <color name="splash_bg">#F7F5EF</color>
+</resources>

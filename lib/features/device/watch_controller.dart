@@ -28,7 +28,33 @@ class WatchState {
     this.syncing = false,
     this.lastSync,
     this.findingPhone = false,
+    this.infoLoaded = false,
+    this.syncStep,
+    this.syncNotes = const [null, null, null],
+    this.lastSyncSummary,
+    this.retryAt,
+    this.attempt = 0,
+    this.lastSeen,
   });
+
+  /// Battery/serial/time have been read on this connection.
+  final bool infoLoaded;
+
+  /// While syncing: 0 = steps, 1 = heart rate, 2 = sleep.
+  final int? syncStep;
+
+  /// Per-step result text shown in the sync card (steps, heart, sleep).
+  final List<String?> syncNotes;
+
+  /// e.g. "Synced 7 days · steps, heart rate & sleep" (for the toast).
+  final String? lastSyncSummary;
+
+  /// Next automatic reconnect attempt, and how many have been made.
+  final DateTime? retryAt;
+  final int attempt;
+
+  /// When the link last dropped.
+  final DateTime? lastSeen;
 
   final LinkStatus status;
   final String? deviceId;
@@ -67,8 +93,24 @@ class WatchState {
     bool? syncing,
     DateTime? lastSync,
     bool? findingPhone,
+    bool? infoLoaded,
+    int? syncStep,
+    bool clearSyncStep = false,
+    List<String?>? syncNotes,
+    String? lastSyncSummary,
+    DateTime? retryAt,
+    bool clearRetry = false,
+    int? attempt,
+    DateTime? lastSeen,
   }) {
     return WatchState(
+      infoLoaded: infoLoaded ?? this.infoLoaded,
+      syncStep: clearSyncStep ? null : (syncStep ?? this.syncStep),
+      syncNotes: syncNotes ?? this.syncNotes,
+      lastSyncSummary: lastSyncSummary ?? this.lastSyncSummary,
+      retryAt: clearRetry ? null : (retryAt ?? this.retryAt),
+      attempt: attempt ?? this.attempt,
+      lastSeen: lastSeen ?? this.lastSeen,
       status: status ?? this.status,
       deviceId: deviceId ?? this.deviceId,
       mtu: mtu ?? this.mtu,
@@ -128,6 +170,9 @@ class WatchController extends Notifier<WatchState> {
       battery: state.battery,
       serial: state.serial,
       lastSync: state.lastSync,
+      lastSyncSummary: state.lastSyncSummary,
+      attempt: state.attempt,
+      lastSeen: state.lastSeen,
     );
     final link = WatchLink(BluetoothDevice.fromId(deviceId), log: _log.add);
     _link = link;
@@ -147,7 +192,7 @@ class WatchController extends Notifier<WatchState> {
       _log.add(LogDir.info, 'Handshake OK');
 
       _attempt = 0;
-      state = state.copyWith(status: LinkStatus.ready, clearMessage: true);
+      state = state.copyWith(status: LinkStatus.ready, clearMessage: true, clearRetry: true, attempt: 0);
       await _onConnected();
     } catch (e) {
       _log.add(LogDir.info, 'Connect failed: $e');
@@ -159,8 +204,13 @@ class WatchController extends Notifier<WatchState> {
   }
 
   Future<void> _onConnected() async {
-    await _run((s) => s.setTime(DateTime.now()));
+    try {
+      await _run((s) => s.setTime(DateTime.now()));
+    } catch (e) {
+      _log.add(LogDir.info, 'Set time failed: $e');
+    }
     await refreshInfo();
+    if (state.isReady) state = state.copyWith(infoLoaded: true);
     await syncHealth();
     _periodic?.cancel();
     _periodic = Timer.periodic(const Duration(minutes: 15), (_) async {
@@ -211,17 +261,27 @@ class WatchController extends Notifier<WatchState> {
   /// Pulls the last 7 days of steps, heart rate and sleep into local storage.
   Future<void> syncHealth() async {
     if (!state.isReady || state.syncing) return;
-    state = state.copyWith(syncing: true);
+    state = state.copyWith(syncing: true, syncStep: 0, syncNotes: const [null, null, null]);
     final now = DateTime.now();
     final since = DateTime(now.year, now.month, now.day).subtract(const Duration(days: 6));
+    // Drop records outside the window (the watch reports e.g. 2021-01-01
+    // leftovers from before its clock was set).
+    final from = dayKey(since), to = dayKey(now);
+    bool inRange(String d) => d.compareTo(from) >= 0 && d.compareTo(to) <= 0;
+    void note(int i, String text, {int? next}) {
+      final notes = [...state.syncNotes]..[i] = text;
+      state = state.copyWith(syncNotes: notes, syncStep: next, clearSyncStep: next == null);
+    }
+
     try {
       final steps = await _run((s) => s.stepHistory(since)) ?? const <StepRecord>[];
+      final stepDays = steps.where((r) => inRange(r.day)).map((r) => r.day).toSet().length;
+      note(0, '$stepDays days · ${steps.where((r) => inRange(r.day)).length} hourly records', next: 1);
       final heart = await _run((s) => s.heartHistory(since)) ?? const <String, List<int>>{};
+      final readings = heart.entries.where((e) => inRange(e.key)).fold(0, (a, e) => a + e.value.where((v) => v > 0).length);
+      note(1, '${heart.keys.where(inRange).length} days · $readings readings', next: 2);
       final sleep = await _run((s) => s.sleepHistory(since)) ?? const <String, List<SleepSegment>>{};
-      // Drop records outside the window (the watch reports e.g. 2021-01-01
-      // leftovers from before its clock was set).
-      final from = dayKey(since), to = dayKey(now);
-      bool inRange(String d) => d.compareTo(from) >= 0 && d.compareTo(to) <= 0;
+      note(2, '${sleep.keys.where(inRange).length} nights');
       await ref.read(healthStoreProvider.notifier).merge(
             steps: steps.where((r) => inRange(r.day)).toList(),
             heart: {for (final e in heart.entries) if (inRange(e.key)) e.key: e.value},
@@ -229,10 +289,16 @@ class WatchController extends Notifier<WatchState> {
           );
       _log.add(LogDir.info,
           'Synced ${steps.length} step hours, ${heart.length} HR days, ${sleep.length} nights');
-      state = state.copyWith(syncing: false, lastSync: DateTime.now());
+      final days = {...steps.map((r) => r.day), ...heart.keys, ...sleep.keys}.where(inRange).length;
+      state = state.copyWith(
+        syncing: false,
+        clearSyncStep: true,
+        lastSync: DateTime.now(),
+        lastSyncSummary: 'Synced $days ${days == 1 ? 'day' : 'days'} · steps, heart rate & sleep',
+      );
     } catch (e) {
       _log.add(LogDir.info, 'Health sync failed: $e');
-      state = state.copyWith(syncing: false);
+      state = state.copyWith(syncing: false, clearSyncStep: true, message: 'Sync failed: $e');
     }
   }
 
@@ -288,6 +354,14 @@ class WatchController extends Notifier<WatchState> {
     _log.add(LogDir.info, 'Disconnected by user');
   }
 
+  /// "Forget this watch": disconnect and drop all per-watch state, so pairing
+  /// (even the same watch) again starts a fresh connection.
+  Future<void> forget() async {
+    await disconnect();
+    _attempt = 0;
+    state = const WatchState();
+  }
+
   // ---- unsolicited frames from the watch ----------------------------------
 
   void _onPush(List<int> f) {
@@ -317,7 +391,7 @@ class WatchController extends Notifier<WatchState> {
           'Connection lost (reason: ${device.disconnectReason?.description ?? 'unknown'})');
       _session = null;
       _periodic?.cancel();
-      state = state.copyWith(status: LinkStatus.disconnected);
+      state = state.copyWith(status: LinkStatus.disconnected, lastSeen: DateTime.now(), infoLoaded: false, syncing: false, clearSyncStep: true);
       _scheduleReconnect();
     });
   }
@@ -339,7 +413,11 @@ class WatchController extends Notifier<WatchState> {
     _attempt++;
     final note = 'Retrying in $seconds s';
     _log.add(LogDir.info, note);
-    state = state.copyWith(message: note);
+    state = state.copyWith(
+      message: note,
+      retryAt: DateTime.now().add(Duration(seconds: seconds)),
+      attempt: _attempt,
+    );
     _retryTimer?.cancel();
     _retryTimer = Timer(Duration(seconds: seconds), () => connect(id));
   }

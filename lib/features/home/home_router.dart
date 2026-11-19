@@ -5,6 +5,7 @@ import '../../app_runtime.dart';
 import '../../data/saved_device.dart';
 import '../scan/scan_screen.dart';
 import 'home_shell.dart';
+import 'splash.dart';
 
 /// No saved watch -> scan screen. Saved watch -> tabs (runtime connects).
 /// Only built once permissions are granted, so it is safe to kick the runtime.
@@ -19,9 +20,8 @@ class HomeRouter extends ConsumerWidget {
       AsyncData(:final value) => value == null
           ? const ScanScreen()
           : HomeShell(key: ValueKey(value.id), device: value),
-      AsyncError(:final error) =>
-        Scaffold(body: Center(child: Text('Could not load settings: $error'))),
-      _ => const Scaffold(body: Center(child: CircularProgressIndicator())),
+      AsyncError(:final error) => SplashView(message: 'Could not load settings: $error'),
+      _ => const SplashView(),
     };
   }
 }

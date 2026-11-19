@@ -101,6 +101,11 @@ class AppSettingsNotifier extends AsyncNotifier<AppSettings> {
     }
   }
 
+  /// Add or remove one app from the forwarding allow-list.
+  Future<void> setAppForwarded(String package, bool on) => edit((a) => a.copyWith(
+        allowedApps: on ? {...a.allowedApps, package} : ({...a.allowedApps}..remove(package)),
+      ));
+
   Future<void> edit(AppSettings Function(AppSettings) change) async {
     final current = state.value ?? await future;
     final next = change(current);

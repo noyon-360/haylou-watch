@@ -60,7 +60,14 @@ class NativeBridge {
   }
 
   /// Foreground service that keeps the BLE link alive with the app closed.
-  Future<void> startService(String text) => _invoke('startService', {'text': text});
+  /// [color] = ARGB accent for the status notification (season primary).
+  Future<void> startService(String text, {int? color}) => _invoke('startService', {'text': text, 'color': ?color});
+
+  Future<void> openBluetoothSettings() => _invoke('openBluetoothSettings');
+
+  /// Switches the launcher icon to the season's activity-alias
+  /// (grishma, barsha, sharat, hemanta, sheet, basanta).
+  Future<void> setLauncherSeason(String season) => _invoke('setLauncherSeason', {'season': season});
   Future<void> stopService() => _invoke('stopService');
 
   Future<bool> isListenerEnabled() async => await _invoke<bool>('isListenerEnabled') ?? false;

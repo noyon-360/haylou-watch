@@ -9,6 +9,8 @@ import 'data/saved_device.dart';
 import 'features/device/watch_controller.dart';
 import 'features/notifications/app_types.dart';
 import 'platform/native_bridge.dart';
+import 'theme/palette.dart';
+import 'theme/theme_controller.dart';
 
 /// Non-UI logic that must keep working while no screen is shown
 /// (the Flutter engine is kept alive by the foreground service):
@@ -70,6 +72,18 @@ class AppRuntime {
     });
 
     _subs.add(NativeBridge.instance.notifications.listen(_forward));
+
+    // Launcher icon + status notification follow the active season
+    // (auto by Bengali calendar, or the user's manual pick).
+    ref.listen(activeSeasonProvider, (prev, next) {
+      // Wait for the saved preference so a manual pick isn't overwritten at start.
+      if (ref.read(themePrefProvider).isLoading) return;
+      NativeBridge.instance.setLauncherSeason(next.name);
+      if (prev != next) _updateService();
+    }, fireImmediately: true);
+    ref.listen(themePrefProvider, (_, next) {
+      if (next.hasValue) NativeBridge.instance.setLauncherSeason(ref.read(activeSeasonProvider).name);
+    });
   }
 
   /// Called by the UI once permissions are granted (no dialogs from here).
@@ -105,7 +119,8 @@ class AppRuntime {
       LinkStatus.error => 'Reconnecting…',
       _ => 'Connecting…',
     };
-    NativeBridge.instance.startService(text);
+    final color = SeasonColors.forSeason(ref.read(activeSeasonProvider)).primary.toARGB32();
+    NativeBridge.instance.startService(text, color: color);
   }
 
   Future<void> _forward(PhoneNotification n) async {

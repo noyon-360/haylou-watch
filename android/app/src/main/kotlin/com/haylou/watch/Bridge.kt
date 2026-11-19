@@ -3,6 +3,7 @@ package com.haylou.watch
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.Ringtone
 import android.media.RingtoneManager
@@ -38,7 +39,18 @@ object Bridge {
             try {
                 when (call.method) {
                     "startService" -> {
-                        startService(call.argument<String>("text") ?: "Connected")
+                        startService(call.argument<String>("text") ?: "Connected", call.argument<Number>("color")?.toInt())
+                        result.success(null)
+                    }
+                    "openBluetoothSettings" -> {
+                        app.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        result.success(null)
+                    }
+                    "setLauncherSeason" -> {
+                        pendingSeason = call.argument<String>("season") ?: "hemanta"
+                        // Disabling the alias that hosts a visible activity closes it,
+                        // so only switch while no screen is shown (see MainActivity.onStop).
+                        if (!uiVisible) applyPendingLauncher()
                         result.success(null)
                     }
                     "stopService" -> {
@@ -74,8 +86,57 @@ object Bridge {
         main.post { channel?.invokeMethod("notification", data) }
     }
 
-    private fun startService(text: String) {
+    private val seasons = listOf("Grishma", "Barsha", "Sharat", "Hemanta", "Sheet", "Basanta")
+
+    /** True while MainActivity is started (on screen). */
+    @Volatile var uiVisible = false
+    @Volatile private var pendingSeason: String? = null
+
+    /** Applies the last requested launcher season, if any. */
+    fun applyPendingLauncher() {
+        val s = pendingSeason ?: return
+        pendingSeason = null
+        try {
+            setLauncherSeason(s)
+        } catch (e: Exception) {
+            Log.w(TAG, "Launcher switch failed: ${e.message}")
+        }
+    }
+
+    /**
+     * One launcher activity-alias per season (see AndroidManifest). Enables the
+     * wanted one and disables the rest, without killing the app. No-op when
+     * already in place, so calling it on every start is cheap.
+     */
+    private fun setLauncherSeason(season: String) {
+        val wanted = seasons.firstOrNull { it.equals(season, ignoreCase = true) } ?: return
+        val pm = app.packageManager
+        val current = seasons.firstOrNull { name ->
+            val state = pm.getComponentEnabledSetting(ComponentName(app, "${app.packageName}.Launcher$name"))
+            state == PackageManager.COMPONENT_ENABLED_STATE_ENABLED ||
+                (state == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT && name == "Hemanta")
+        }
+        if (current == wanted) return
+        // Enable the new alias first so the app always has a launcher entry.
+        pm.setComponentEnabledSetting(
+            ComponentName(app, "${app.packageName}.Launcher$wanted"),
+            PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+            PackageManager.DONT_KILL_APP,
+        )
+        for (name in seasons) {
+            if (name == wanted) continue
+            pm.setComponentEnabledSetting(
+                ComponentName(app, "${app.packageName}.Launcher$name"),
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP,
+            )
+        }
+        Log.i(TAG, "Launcher icon -> $wanted")
+    }
+
+    private fun startService(text: String, color: Int?) {
         val intent = Intent(app, WatchLinkService::class.java).putExtra("text", text)
+        if (color != null) intent.putExtra("color", color)
         try {
             app.startForegroundService(intent)
         } catch (e: Exception) {

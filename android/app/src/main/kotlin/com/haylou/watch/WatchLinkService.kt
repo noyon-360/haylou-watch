@@ -26,14 +26,16 @@ class WatchLinkService : Service() {
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = Notification.Builder(this, CHANNEL)
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+        val builder = Notification.Builder(this, CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_watch)
             .setContentTitle("Watch")
             .setContentText(intent?.getStringExtra("text") ?: "Connected")
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .build()
+        // Tint with the active season's colour (sent from Dart).
+        intent?.takeIf { it.hasExtra("color") }?.let { builder.setColor(it.getIntExtra("color", 0)) }
+        val notification = builder.build()
         startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         return START_STICKY
     }

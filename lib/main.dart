@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'app_runtime.dart';
 import 'features/home/home_router.dart';
 import 'features/permission/permission_gate.dart';
+import 'theme/app_theme.dart';
+import 'theme/theme_controller.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,17 +17,19 @@ void main() {
   runApp(UncontrolledProviderScope(container: container, child: const MyApp()));
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends ConsumerWidget {
   const MyApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // The whole UI (colours + logo) follows the active season.
+    final season = ref.watch(activeSeasonProvider);
     return MaterialApp(
       title: 'Watch',
-      theme: ThemeData(colorScheme: .fromSeed(seedColor: Colors.teal)),
-      darkTheme: ThemeData(
-        colorScheme: .fromSeed(seedColor: Colors.teal, brightness: Brightness.dark),
-      ),
+      debugShowCheckedModeBanner: false,
+      theme: buildTheme(season),
+      themeMode: ThemeMode.light,
+      themeAnimationDuration: const Duration(milliseconds: 450),
       home: const PermissionGate(child: HomeRouter()),
     );
   }
