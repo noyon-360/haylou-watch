@@ -9,6 +9,21 @@
   It has no account, no cloud and no analytics, and it asks for <b>5 permissions instead of 60</b>.
 </p>
 
+<p align="center">
+  <a href="https://github.com/noyon-360/haylou-watch/releases/latest"><b>⬇ Download the latest APK</b></a>
+</p>
+
+---
+
+## Download
+
+Get the APK from the [latest release](https://github.com/noyon-360/haylou-watch/releases/latest):
+
+- **`app-arm64-v8a-release.apk`** for almost every phone made since ~2017.
+- `app-armeabi-v7a-release.apk` only if the one above won't install (older 32-bit phones).
+
+Allow "Install unknown apps" when Android asks. Disconnect the official Haylou app first, because the watch accepts only one connection at a time. Android 12 or newer is required.
+
 ---
 
 ## Why this exists
