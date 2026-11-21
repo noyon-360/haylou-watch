@@ -25,7 +25,7 @@ class MyApp extends ConsumerWidget {
     // The whole UI (colours + logo) follows the active season.
     final season = ref.watch(activeSeasonProvider);
     return MaterialApp(
-      title: 'Watch',
+      title: 'Watch App',
       debugShowCheckedModeBanner: false,
       theme: buildTheme(season),
       themeMode: ThemeMode.light,
